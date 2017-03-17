@@ -3,6 +3,15 @@
 #include <ByteBuffer.h>
 #include "pushbuttonswitch.h" // How do you subclass?  See the pushbuttonswitch.h file:
 #include <AdaEncoder.h>
+#include <EEPROM.h> 
+
+
+#define DISTANCE_ADDR    0 //4 - float
+#define FEEDMOVE_ADDR    4  //4 - int
+#define FEEDRAPID_ADDR    6 //4 - int
+#define AUTOMAT_ADDR    8 //2 - int
+#define INCREMENT_ADDR    10 //4 - float
+#define JOGINCREMENT_ADDR    14 //4 - float
 
 ByteBuffer printBuffer(80);
 
@@ -68,6 +77,47 @@ boolean nextSet = false;
 
 uint8_t progressA = 0;
 uint8_t progressB = 0;
+
+void Get_Settings(){
+  
+  distance = readFloatParam(DISTANCE_ADDR);
+  if (distance > 9999 || distance < -9999 || isnan(distance)){
+    writeFloatParam(10,DISTANCE_ADDR);
+    distance = 10.0;
+  }
+
+  feedMove = readParam(FEEDMOVE_ADDR);
+  if (feedMove > 9999 || feedMove < 0 || isnan(feedMove)){
+    writeParam(10,FEEDMOVE_ADDR);
+    feedMove = 50;
+  }
+  feedCurrent = feedMove;
+
+  feedRapid = readParam(FEEDRAPID_ADDR);
+  if (feedRapid > 9999 || feedRapid < 0 || isnan(feedRapid)){
+    writeParam(100,FEEDRAPID_ADDR);
+    feedRapid = 100;
+  }  
+
+  automat = readParam(AUTOMAT_ADDR);
+  if (automat > 3 || automat < 0 || isnan(automat)){
+    writeParam(0,AUTOMAT_ADDR);
+    automat = 0;
+  }  
+
+  increment = readFloatParam(INCREMENT_ADDR);
+  if (increment > 1000 || increment < 0.01 || isnan(increment)){
+    writeFloatParam(1,INCREMENT_ADDR);
+    increment = 1;
+  }  
+
+  jogIncrement = readFloatParam(JOGINCREMENT_ADDR);
+  if (jogIncrement > 1000 || jogIncrement < 0.01 || isnan(jogIncrement)){
+    writeFloatParam(1,JOGINCREMENT_ADDR);
+    jogIncrement = 1;
+  }  
+
+}
 
 void draw(void) {
   
@@ -143,6 +193,7 @@ void setup(void) {
   Serial.begin(115200);
   softReset();
   resetMpos();
+  Get_Settings();
   nextDistance = distance;
   nextWorkMode = workMode;
 }
@@ -307,15 +358,19 @@ void controller(void) {
         wheelMode = 5;
         break;
       case 5:
+        writeFloatParam(distance, DISTANCE_ADDR);
         wheelMode = workMode == '0' ? 4 : 3;
         break;
       case 4:
+        writeParam((int)feedRapid, FEEDRAPID_ADDR);
         wheelMode = 7;
         break;
       case 3:
+        writeParam((int)feedMove, FEEDMOVE_ADDR);
         wheelMode = 7;
         break;        
       default:
+        writeParam(automat, AUTOMAT_ADDR);
         wheelMode = 0;
         break;        
     }
@@ -328,6 +383,7 @@ void controller(void) {
         wheelMode = 1;
         break;
       case 1:
+        writeFloatParam(jogIncrement, JOGINCREMENT_ADDR);
         wheelMode = 0;
         break;        
       case 5:
@@ -335,6 +391,7 @@ void controller(void) {
         break;
       case 6:
         wheelMode = 5;
+        writeFloatParam(increment, INCREMENT_ADDR);
         break;        
       case 8:
         resetOverride();
@@ -472,6 +529,36 @@ void calcWorldPosition(){
   wpos[0] = mpos[0] - wmoffset[0];
   wpos[1] = mpos[1] - wmoffset[1];
   wpos[2] = mpos[2] - wmoffset[2];
+}
+
+void writeParam(unsigned int value, unsigned int addr){ // Write menu entries to EEPROM
+  unsigned int a = value/256;
+  unsigned int b = value % 256;
+  EEPROM.write(addr,a);
+  EEPROM.write(addr+1,b);
+}
+
+unsigned int readParam(unsigned int addr){ // Read previous menu entries from EEPROM
+  unsigned int a=EEPROM.read(addr);
+  unsigned int b=EEPROM.read(addr+1);
+  return a*256+b; 
+}
+
+void writeFloatParam(float value, unsigned int addr) {
+  const byte* p = (const byte*)(const void*)&value;
+  unsigned int i;
+  for (i = 0; i < sizeof(value); i++)
+    EEPROM.write(addr++, *p++);
+  return;
+}
+
+static float readFloatParam(unsigned int addr) {
+  float value;
+  byte* p = (byte*)(void*)&value;
+  unsigned int i;
+  for (i = 0; i < sizeof(value); i++)
+    *p++ = EEPROM.read(addr++);
+  return value;
 }
 
 void loop(void) {
