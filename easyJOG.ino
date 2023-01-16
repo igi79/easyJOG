@@ -1,10 +1,8 @@
 #include "U8glib.h"
-#include <ooPinChangeInt.h>
-#include <ByteBuffer.h>
-#include "pushbuttonswitch.h" // How do you subclass?  See the pushbuttonswitch.h file:
-#include <AdaEncoder.h>
+#include "pushButton.h"
 #include <EEPROM.h> 
-
+#include "EncoderTool.h"
+using namespace EncoderTool;
 
 #define DISTANCE_ADDR    0 //4 - float
 #define FEEDMOVE_ADDR    4  //4 - int
@@ -13,21 +11,21 @@
 #define INCREMENT_ADDR    10 //4 - float
 #define JOGINCREMENT_ADDR    14 //4 - float
 
-ByteBuffer printBuffer(80);
-
-pushbuttonswitch Aswitch=pushbuttonswitch(6, "A"); //stop/zero
-pushbuttonswitch Bswitch=pushbuttonswitch(7, "B"); //+/-
-pushbuttonswitch Cswitch=pushbuttonswitch(8, "C"); //play
-pushbuttonswitch Dswitch=pushbuttonswitch(9, "D"); //mode
-pushbuttonswitch Eswitch=pushbuttonswitch(4, "E"); //setup
-pushbuttonswitch jogswitch=pushbuttonswitch(5, "j");
+pushButton Aswitch(6); //stop/zero
+pushButton Bswitch(7); //+/-
+pushButton Cswitch(8); //play
+pushButton Dswitch(9); //mode
+pushButton Eswitch(4); //setup
+pushButton jogswitch(5);
 
 U8GLIB_ST7920_128X64_1X u8g(10);
-AdaEncoder encoderA = AdaEncoder('a', 3, 2);
+Encoder encoder; 
 
 unsigned long lastBlink;
 boolean blinkOn;
 int8_t clicks = 0;
+int absclicks = 0;
+int encclicks;
 String stat = "-"; 
 float wpos[3] = {0,0,0};
 float mpos[3] = {0,0,0};
@@ -39,15 +37,16 @@ char A = 'X';
 uint8_t a = 0;
 unsigned int feedJog = 100;
 unsigned int feedMove = 50;
+unsigned int feedMovePot = 50;
 unsigned int feedRapid = 100;
 unsigned int feedCurrent = 100;
 String ov;
 
-#define AMODES 4
-const char *autoMode[AMODES] = {"Manual", "Switch", "Auto < >>", "Auto < >"};
+#define AMODES 5
+const char *autoMode[AMODES] = {"Manual", "Switch", "Auto < >>", "Auto < >", "Remote"};
 
 uint8_t automat = 2;
-
+uint8_t runbyremote = 0;
 /*
  * 0 - jog
  * 1 - jogIncrement
@@ -58,6 +57,7 @@ uint8_t automat = 2;
  * 6 - increment
  * 7 - automat
  * 8 - run / hold - feed override
+ * 9 - blocked / remote
  */
 unsigned int wheelMode = 0; 
 /*
@@ -100,7 +100,7 @@ void Get_Settings(){
   }  
 
   automat = readParam(AUTOMAT_ADDR);
-  if (automat > 3 || automat < 0 || isnan(automat)){
+  if (automat > 4 || automat < 0 || isnan(automat)){
     writeParam(0,AUTOMAT_ADDR);
     automat = 0;
   }  
@@ -151,7 +151,9 @@ void draw(void) {
   u8g.setPrintPos(64, 38);
   if(!(blinkOn && (wheelMode == 3 || wheelMode == 4)))u8g.print("F");
   u8g.setPrintPos(70, 38);
-  u8g.print(workMode == '0' ? feedRapid : feedMove);
+  if(automat == 4 && !(wheelMode == 3 || wheelMode == 4)){
+    u8g.print(feedMovePot);
+  } else u8g.print(workMode == '0' ? feedRapid : feedMove);
   //override
   if(workMode == '1'){
     u8g.print("(");
@@ -161,6 +163,7 @@ void draw(void) {
   //mode
   u8g.setPrintPos(0, 47);
   u8g.print(workMode == '0' ? "Rapid" : "Move");  
+  //u8g.print(abs(dpos[0] - wpos[0]));
   //automatic mode
   u8g.setPrintPos(64, 47);
   if(!(blinkOn && wheelMode == 7))u8g.print(autoMode[automat]);
@@ -180,13 +183,8 @@ void draw(void) {
 }
 
 void setup(void) {
-  int8_t temp;
-  do{
-    temp = clicks;
-    updateClicks();  
-  }while (temp != clicks);
   clicks = 0;
-  
+  encoder.begin(2, 3);
   u8g.setColorIndex(1);
   pinMode(A2, INPUT_PULLUP);
   pinMode(A3, INPUT_PULLUP);
@@ -206,9 +204,11 @@ void resetMpos(){
 }
 
 void updateClicks(){
-  AdaEncoder *thisEncoder=NULL;
-  thisEncoder=AdaEncoder::genie();
-  clicks = thisEncoder->query();
+  if (encoder.valueChanged()){
+    encclicks = encoder.getValue();
+    clicks = absclicks - encclicks;
+    absclicks = encclicks;
+  } else clicks = 0;
 }
 
 void controller(void) {
@@ -279,8 +279,85 @@ void controller(void) {
     }   
   }
 
-   if(Aswitch.getCount() > 0){
-    Aswitch.reset();
+  if(automat == 4){
+    workMode = '1';
+    if(stat.equals("Idle")){
+      unsigned int sensorValueA0 = analogRead(A0);
+      feedMovePot = map(sensorValueA0, 0, 1020, 0, feedMove);
+      feedCurrent = feedMovePot;
+    }
+
+    unsigned int sensorValueA1 = analogRead(A1);
+    int8_t rmt = 0;
+    if(sensorValueA1 > 480 && sensorValueA1 < 505) rmt = 1;
+    if(sensorValueA1 > 310 && sensorValueA1 < 320) rmt = 2;
+    if(sensorValueA1 > 120 && sensorValueA1 < 130) rmt = 3;
+    if(sensorValueA1 > 100 && sensorValueA1 < 110) rmt = 4;
+
+    switch(rmt){
+      case 0:
+        //if(stat.equals("Jog"))stopJog();
+        if(stat.equals("Run") && runbyremote > 0) gmoveHold();
+        if(stat.equals("Idle") && runbyremote > 0) runbyremote = 0;
+        break;
+      case 1:
+        if(runbyremote > 0){
+          runbyremote = 0;
+          softReset();
+        }
+        if(stat.equals("Idle") || (stat.equals("Jog") && abs(dpos[0] - wpos[0]) < jogIncrement)){
+          jog(-1);
+        }
+        break;
+      case 2:
+        if(runbyremote > 0){
+          runbyremote = 0;
+          softReset();
+        }
+        if(stat.equals("Idle") || (stat.equals("Jog") && abs(dpos[0] - wpos[0]) < jogIncrement)){
+          jog(1);
+        }
+        break;
+      case 3:
+        if(stat.equals("Idle") && runbyremote == 0){
+          distance = -1*abs(distance);
+          gmove();
+          runbyremote = 1;
+          wheelMode = 8;
+        }
+        if(stat.equals("Hold:0") && runbyremote == 1){
+          gmoveResume();
+        }
+        if(stat.equals("Hold:0") && runbyremote == 2){
+          softReset();
+          distance = -1*abs(distance);
+          gmove();
+          runbyremote = 1;
+
+        }
+        break;
+      case 4:
+        if(stat.equals("Idle") && runbyremote == 0){
+          distance = abs(distance);
+          gmove();
+          runbyremote = 2;
+          wheelMode = 8;
+        }
+        if(stat.equals("Hold:0") && runbyremote == 2){
+          gmoveResume();
+        }
+        if(stat.equals("Hold:0") && runbyremote == 1){
+          softReset();
+          distance = abs(distance);
+          gmove();
+          runbyremote = 2;
+        }
+        break;
+    }
+  }
+
+  /* STOP ZERO */
+  if(Aswitch.wasPressed()){
     wheelMode = 0;
     if(stat.equals("Hold:0")){
       softReset();
@@ -297,14 +374,14 @@ void controller(void) {
     
    }
 
-   if(Bswitch.getCount() > 0 && automat != 1 && stat.equals("Idle")){
-    Bswitch.reset();
+   /* DIRECTION +/- */
+   if(Bswitch.wasPressed() && automat != 1 && stat.equals("Idle")){
     distance = -distance;
     wheelMode = 0;
    }
 
-   if(Cswitch.getCount() > 0){
-    Cswitch.reset();
+   /* RUN GCODE */
+   if(Cswitch.wasPressed()){
     wheelMode = 0;
     if(stat.equals("Idle")){
       gmove();
@@ -337,8 +414,8 @@ void controller(void) {
     }    
    }
 
-   if(Dswitch.getCount() > 0  && automat != 1 && stat.equals("Idle")){
-    Dswitch.reset();
+   /* MOVE / RAPID */
+   if(Dswitch.wasPressed() && automat != 1 && automat != 4 && stat.equals("Idle")){
     switch(workMode){
       case '0':
         workMode = '1';
@@ -351,8 +428,8 @@ void controller(void) {
     }
    }
 
-   if(Eswitch.getCount() > 0){
-    Eswitch.reset();
+   /* SETUP */
+   if(Eswitch.wasPressed()){
     switch(wheelMode){
       case 0:
         wheelMode = 5;
@@ -376,8 +453,8 @@ void controller(void) {
     }
    }
 
-   if(jogswitch.getCount() > 0){
-    jogswitch.reset();
+   /* ENCODER BUTTON */
+   if(jogswitch.wasPressed()){
     switch(wheelMode){
       case 0:
         wheelMode = 1;
@@ -418,6 +495,7 @@ float setIncrement(float increment, int8_t clicks){
 
 uint8_t setAutomat(int8_t clicks){
   int8_t a = automat;
+
   a += clicks;
   if(a >= AMODES){
     a = AMODES - 1;
@@ -445,22 +523,21 @@ void stopJog(){
 }
 
 void jog(int8_t clicks){
-        float jogDistance = (float)clicks * (float)jogIncrement;
-        Serial.write("$J=G91");
-        Serial.write(A);
-        Serial.print(jogDistance);
-        Serial.write('F');
-        Serial.print(feedJog);
-        Serial.write('\n');
-        Serial.find('o');
-        dpos[a] += jogDistance;
+  float jogDistance = (float)clicks * (float)jogIncrement;
+  Serial.write("$J=G91");
+  Serial.write(A);
+  Serial.print(jogDistance);
+  Serial.write('F');
+  Serial.print(feedRapid);
+  Serial.write('\n');
+  Serial.find('o');
+  dpos[a] += jogDistance;
 }
 
 void gmoveHold(){
   Serial.write('!');
   readPosition();
 }
-
 
 void gmoveResume(){
   Serial.write('~');
@@ -491,15 +568,15 @@ void killLock(){
 }
 
 void gmove(){
-        Serial.write("G91G");
-        Serial.write(workMode);
-        Serial.write(A);
-        Serial.print(distance);
-        Serial.write('F');
-        Serial.print(feedCurrent);
-        Serial.write('\n');
-        Serial.find('o');
-        dpos[a] += distance;
+  Serial.write("G91G");
+  Serial.write(workMode);
+  Serial.write(A);
+  Serial.print(distance);
+  Serial.write('F');
+  Serial.print(feedCurrent);
+  Serial.write('\n');
+  Serial.find('o');
+  dpos[a] += distance;
 }
 
 
