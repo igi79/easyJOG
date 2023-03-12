@@ -4,6 +4,7 @@
 #include "EncoderTool.h"
 using namespace EncoderTool;
 
+#define STEPMM 2133.333
 #define DISTANCE_ADDR    0 //4 - float
 #define FEEDMOVE_ADDR    4  //4 - int
 #define FEEDRAPID_ADDR    6 //4 - int
@@ -123,6 +124,15 @@ void draw(void) {
   
   u8g.setDefaultForegroundColor();
   
+  //debug
+  // u8g.setFont(u8g_font_profont11r);
+  // u8g.setPrintPos(0, 10);
+  // u8g.print(wpos[0]);
+  // u8g.setPrintPos(64, 10);
+  // u8g.print(wheelMode);
+  // u8g.setPrintPos(64, 20);
+  // u8g.print(feedCurrent);
+
   //position
   u8g.setFont(u8g_font_helvR24n);
   u8g.setFontRefHeightText();
@@ -191,6 +201,7 @@ void setup(void) {
   Serial.begin(115200);
   softReset();
   resetMpos();
+  setStepMm();
   Get_Settings();
   nextDistance = distance;
   nextWorkMode = workMode;
@@ -217,9 +228,13 @@ void controller(void) {
     if(wheelMode == 8){
       wheelMode = 0;
     }
+    if(automat == 0){
+      feedCurrent = workMode == '0' ? feedRapid : feedMove;
+    }
     if(automat == 1){
       workMode = digitalRead(A3) == HIGH ? '0' : '1';
-      distance = digitalRead(A2) == HIGH ? abs(distance) : -abs(distance); 
+      distance = digitalRead(A2) == HIGH ? abs(distance) : -abs(distance);
+      feedCurrent = workMode == '0' ? feedRapid : feedMove;
     }
     if(automat == 2 && nextSet){
       distance = nextDistance;
@@ -282,17 +297,17 @@ void controller(void) {
   if(automat == 4){
     workMode = '1';
     if(stat.equals("Idle")){
-      unsigned int sensorValueA0 = analogRead(A0);
+      unsigned int sensorValueA0 = analogRead(A1);
       feedMovePot = map(sensorValueA0, 0, 1020, 0, feedMove);
       feedCurrent = feedMovePot;
     }
 
-    unsigned int sensorValueA1 = analogRead(A1);
+    unsigned int sensorValueA1 = analogRead(A0);
     int8_t rmt = 0;
-    if(sensorValueA1 > 480 && sensorValueA1 < 505) rmt = 1;
-    if(sensorValueA1 > 310 && sensorValueA1 < 320) rmt = 2;
-    if(sensorValueA1 > 120 && sensorValueA1 < 130) rmt = 3;
-    if(sensorValueA1 > 100 && sensorValueA1 < 110) rmt = 4;
+    if(sensorValueA1 > 590 && sensorValueA1 < 610) rmt = 1;
+    if(sensorValueA1 > 755 && sensorValueA1 < 775) rmt = 2;
+    if(sensorValueA1 > 90 && sensorValueA1 < 110) rmt = 3;
+    if(sensorValueA1 > 170 && sensorValueA1 < 190) rmt = 4;
 
     switch(rmt){
       case 0:
@@ -440,6 +455,7 @@ void controller(void) {
         break;
       case 4:
         writeParam((int)feedRapid, FEEDRAPID_ADDR);
+        setMaxRate();
         wheelMode = 7;
         break;
       case 3:
@@ -565,6 +581,20 @@ void matchDpos(){
 void killLock(){
   Serial.print("$X\n");
   readPosition();
+}
+
+void setStepMm(){
+  Serial.write("$100=");
+  Serial.print(STEPMM);
+  Serial.write('\n');
+  Serial.find('o');
+}
+
+void setMaxRate(){
+  Serial.write("$110=");
+  Serial.print(feedRapid);
+  Serial.write('\n');
+  Serial.find('o');
 }
 
 void gmove(){
